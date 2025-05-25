@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "History to PocketBase",
+  "version": "1.0",
+  "description": "Save browser history to PocketBase",
+  "permissions": [
+    "history",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://az.hoshor.me:8001/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "History to PocketBase"
+  }
+}
