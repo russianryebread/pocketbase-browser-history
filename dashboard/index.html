@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Browser History Analytics</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pocketbase/0.21.3/pocketbase.umd.js"></script>
+        <script src="app.js"></script>
+        <link rel="stylesheet" href="app.css">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@100..900&display=swap" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container">
+            <header class="header">
+                <div style="text-align: right">
+                    <select id="userFilter" onchange="loadData()">
+                        <option value="">All</option>
+                    </select>
+                    <!-- <input type="email" id="userFilter" placeholder="Filter by email" onblur="loadData()"> -->
+                    <button onclick="exportData()">Export CSV</button>
+                    <button onclick="logout()">Logout</button>
+                </div>
+                <div>
+                    <h1>Browser History Analytics</h1>
+                    <p>Discover insights from your browsing patterns</p>
+                </div>
+            </header>
+
+            <div class="login-panel" id="loginForm">
+                <!-- <input type="text" id="pocketbaseUrl" placeholder="PocketBase URL" value="https://az.hoshor.me:8001"> -->
+                <input
+                    type="email"
+                    id="username"
+                    placeholder="Username/Email"
+                />
+                <input type="password" id="password" placeholder="Password" />
+                <button onclick="authenticate()">Login</button>
+            </div>
+
+            <div id="loadingIndicator" class="loading">
+                Enter credentials and click "Login & Load Data" to begin
+                analysis
+            </div>
+
+            <div id="errorMessage" class="error" style="display: none"></div>
+
+            <div id="analyticsContent" style="display: none">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number" id="totalVisits">0</div>
+                        <div class="stat-label">Total Visits</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="uniqueSites">0</div>
+                        <div class="stat-label">Unique Sites</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="activeUsers">0</div>
+                        <div class="stat-label">Active Users</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="avgDaily">0</div>
+                        <div class="stat-label">Avg Daily Visits</div>
+                    </div>
+                </div>
+
+                <div class="insights-panel">
+                    <h3 class="insights-title">Key Insights</h3>
+                    <div class="insights-grid" id="insightsContainer"></div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container">
+                        <h3 class="chart-title">Daily Activity Trend</h3>
+                        <canvas id="dailyChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3 class="chart-title">Hourly Usage Pattern</h3>
+                        <canvas id="hourlyChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3 class="chart-title">Top Domains</h3>
+                        <canvas id="domainsChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3 class="chart-title">User Activity Distribution</h3>
+                        <canvas id="usersChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="top-sites-list">
+                    <h3 class="chart-title">Most Visited Sites</h3>
+                    <div id="topSitesList"></div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>
