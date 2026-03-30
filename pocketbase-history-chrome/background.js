@@ -56,6 +56,10 @@ async function syncHistory() {
 async function saveToPageBase(historyItem, config) {
   const data = {
     url: historyItem.url,
+    domain: new URL(historyItem.url).hostname,
+    // favicon: `https://www.google.com/s2/favicons?domain=${new URL(historyItem.url).hostname}`,
+    // description: historyItem.description || '',
+    // content: '', // Placeholder for content, can be fetched later if needed
     title: historyItem.title || 'Untitled',
     visit_time: new Date(historyItem.lastVisitTime).toISOString(),
     visit_count: historyItem.visitCount || 1,

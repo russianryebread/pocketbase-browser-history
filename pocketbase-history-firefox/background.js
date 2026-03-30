@@ -63,6 +63,7 @@ async function syncHistory() {
 async function saveToPageBase(historyItem, config) {
   const data = {
     url: historyItem.url,
+    domain: new URL(historyItem.url).hostname,
     title: historyItem.title || 'Untitled',
     visit_time: new Date(historyItem.lastVisitTime).toISOString(),
     visit_count: historyItem.visitCount || 1,
