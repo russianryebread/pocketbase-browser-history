@@ -240,8 +240,8 @@
   },
   {
     "id": "pbc_history_daily",
-    "listRule": null,
-    "viewRule": null,
+    "listRule": "@request.auth.email = user_email",
+    "viewRule": "@request.auth.email = user_email",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -438,8 +438,8 @@
   },
   {
     "id": "pbc_history_hourly_profile",
-    "listRule": null,
-    "viewRule": null,
+    "listRule": "@request.auth.email = user_email",
+    "viewRule": "@request.auth.email = user_email",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -564,8 +564,8 @@
   },
   {
     "id": "pbc_history_user_totals",
-    "listRule": null,
-    "viewRule": null,
+    "listRule": "@request.auth.email = user_email",
+    "viewRule": "@request.auth.email = user_email",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -724,8 +724,8 @@
   },
   {
     "id": "pbc_history_search_daily",
-    "listRule": null,
-    "viewRule": null,
+    "listRule": "@request.auth.email = user_email",
+    "viewRule": "@request.auth.email = user_email",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
