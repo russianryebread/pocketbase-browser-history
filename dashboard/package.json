@@ -8,6 +8,6 @@
     "pocketbase": "^0.26.8"
   },
   "scripts": {
-    "build:css": "tailwindcss -i input.css -o styles.css --minify --content index.html --content app.js"
+    "build:css": "tailwindcss -i input.css -o styles.css --minify --content index.html,app.js"
   }
 }
