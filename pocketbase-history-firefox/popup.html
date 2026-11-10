@@ -54,26 +54,25 @@
 </head>
 <body>
   <h3>History to PocketBase</h3>
+  <p>Signing in enables automatic uploads of past and new visits to the PocketBase server you enter. Page URLs can include search terms.</p>
 
   <div class="config-section">
     <label for="pocketbaseUrl">PocketBase URL:</label>
-    <input type="text" id="pocketbaseUrl" placeholder="https://az.hoshor.me:8001">
+    <input type="url" id="pocketbaseUrl" placeholder="https://your-pocketbase.example">
   </div>
 
   <div class="config-section">
-    <label for="userEmail">User Email (optional):</label>
+    <label for="userEmail">PocketBase account email:</label>
     <input type="email" id="userEmail" placeholder="user@example.com">
   </div>
 
   <div class="config-section">
-    <label for="userId">Unique ID:</label>
-    <input type="text" id="userId" placeholder="Auto-generated" readonly style="background-color: #f5f5f5;">
-    <small style="color: #666; font-size: 11px;">Auto-generated identifier for this browser</small>
+    <label for="password">Password:</label>
+    <input type="password" id="password" autocomplete="current-password">
   </div>
 
-  <button id="saveConfig">Save</button>
+  <button id="saveConfig">Sign in and save</button>
   <button id="syncNow">Sync</button>
-  <button id="testConnection">Test</button>
 
   <div id="status"></div>
 

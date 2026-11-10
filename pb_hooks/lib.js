@@ -6,7 +6,6 @@
 // require() inside the handler closure.
 
 const ROLLUP_CURSOR_KEY = "rollup_cursor";
-const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 const SAFETY_BUFFER_MS = 60 * 1000;
 
 const CATEGORIES = {
@@ -34,10 +33,10 @@ for (const d of CATEGORIES.adult) HARDCODED_FLAGGED[d] = true;
 // effectively per-handler-invocation).
 let _domainOverrides = null;
 
-function loadDomainOverrides() {
+function loadDomainOverrides(app) {
     if (_domainOverrides !== null) return _domainOverrides;
     try {
-        const recs = $app.findAllRecords("domain_categories");
+        const recs = app.findAllRecords("domain_categories");
         const exact = {};
         const flaggedExact = {};
         const suffix = []; // sorted longest first for greedy match
@@ -63,9 +62,9 @@ function loadDomainOverrides() {
     return _domainOverrides;
 }
 
-function lookupCategory(hostname) {
+function lookupCategory(hostname, app) {
     if (!hostname) return { category: "other", flagged: false };
-    const ov = loadDomainOverrides();
+    const ov = loadDomainOverrides(app);
     if (ov.exact[hostname]) {
         return { category: ov.exact[hostname], flagged: !!ov.flaggedExact[hostname] };
     }
@@ -154,10 +153,10 @@ function rootDomain(host) {
     return parts.length <= 2 ? host : parts.slice(-2).join(".");
 }
 
-function classify(url) {
+function classify(url, app) {
     const p = parseUrl(url);
     if (!p) return { category: "other", flagged: false, domain: "", path: "/", query: "", protocol: "" };
-    const { category, flagged } = lookupCategory(p.hostname);
+    const { category, flagged } = lookupCategory(p.hostname, app);
     return {
         category, flagged,
         domain: p.host,
@@ -193,90 +192,60 @@ function pbDateString(jsDate) {
     return jsDate.toISOString().replace("T", " ").replace("Z", "");
 }
 
-function findOrNull(collection, filter, params) {
-    try {
-        return $app.findFirstRecordByFilter(collection, filter, params);
-    } catch (err) {
-        return null;
-    }
+function findOrNull(app, collection, filter, params) {
+    try { return app.findFirstRecordByFilter(collection, filter, params); }
+    catch (err) { return null; }
 }
 
-function enrichRecord(record) {
+function enrichRecord(record, app) {
     const url = record.getString("url");
-    const info = classify(url);
+    const info = classify(url, app);
     const query = extractSearchQuery(url);
-    if (!record.getString("category")) record.set("category", info.category);
-    if (!record.getString("domain")) record.set("domain", info.domain);
-    if (!record.getString("path")) record.set("path", info.path);
-    if (!record.getString("query")) record.set("query", info.query);
-    if (!record.getString("protocol")) record.set("protocol", info.protocol);
-    if (record.get("flagged") === undefined || record.get("flagged") === null) {
-        record.set("flagged", info.flagged);
-    }
-    if (!record.getString("search_query") && query) record.set("search_query", query);
+    record.set("category", info.category);
+    record.set("domain", info.domain);
+    record.set("path", info.path);
+    record.set("query", info.query);
+    record.set("protocol", info.protocol);
+    record.set("flagged", info.flagged);
+    record.set("search_query", query);
 }
 
 function getCursor() {
-    const rec = findOrNull("system_state", "key = {:k}", { k: ROLLUP_CURSOR_KEY });
+    const rec = findOrNull($app, "system_state", "key = {:k}", { k: ROLLUP_CURSOR_KEY });
     if (rec) return rec;
     const col = $app.findCollectionByNameOrId("system_state");
     const fresh = new Record(col);
     fresh.set("key", ROLLUP_CURSOR_KEY);
-    fresh.set("value", pbDateString(new Date(Date.now() - DEDUP_WINDOW_MS)));
+    fresh.set("value", pbDateString(new Date(0)) + "|");
     $app.save(fresh);
     return fresh;
 }
 
-function dedupBatch(rows) {
-    rows.sort((a, b) => String(a.getString("visit_time")).localeCompare(b.getString("visit_time")));
-    const leaderByKey = new Map();
-    const survivors = [];
-    const toDelete = [];
-    for (const r of rows) {
-        const key = r.getString("user_id") + "|" + r.getString("url");
-        const leader = leaderByKey.get(key);
-        const visitTimeMs = new Date(r.getString("visit_time")).getTime();
-        if (leader) {
-            const leaderMs = new Date(leader.getString("visit_time")).getTime();
-            if (visitTimeMs - leaderMs <= DEDUP_WINDOW_MS) {
-                const merged = (Number(leader.get("visit_count")) || 1) + (Number(r.get("visit_count")) || 1);
-                leader.set("visit_count", merged);
-                if (!leader.getString("title") && r.getString("title")) leader.set("title", r.getString("title"));
-                if (!leader.get("duration") && r.get("duration")) leader.set("duration", r.get("duration"));
-                toDelete.push(r);
-                continue;
-            }
-        }
-        leaderByKey.set(key, r);
-        survivors.push(r);
-    }
-    return { survivors, toDelete };
-}
-
-function applyRollupForRow(r, newDomainCache) {
+function applyRollupForRow(app, r, newDomainCache) {
     const userId = r.getString("user_id");
     if (!userId) return;
     const userEmail = r.getString("user_email") || "";
     const visitTime = r.getString("visit_time") || r.getString("created");
-    const domain = r.getString("domain") || "";
+    const domain = r.getString("domain") || "(unknown)";
     const category = r.getString("category") || "other";
     const flagged = !!r.get("flagged");
     const visitCount = Number(r.get("visit_count")) || 1;
     const duration = Number(r.get("duration")) || 0;
     const searchQuery = r.getString("search_query") || "";
-    const date = dayKey(visitTime);
-    const dt = new Date(visitTime || Date.now());
+    const offset = Number(r.get("timezone_offset")) || 0;
+    const dt = new Date(new Date(visitTime || Date.now()).getTime() - offset * 60000);
+    const date = dayKey(dt.toISOString());
     const weekday = dt.getUTCDay();
     const hour = dt.getUTCHours();
 
-    let daily = findOrNull(
+    let daily = findOrNull(app,
         "history_daily",
         "visit_date >= {:start} && visit_date < {:end} && user_id = {:u} && domain = {:d}",
         { start: date + " 00:00:00.000Z", end: date + " 23:59:59.999Z", u: userId, d: domain }
     );
     let isNewDomainForUser = false;
     if (!daily) {
-        const col = $app.findCollectionByNameOrId("history_daily");
+        const col = app.findCollectionByNameOrId("history_daily");
         daily = new Record(col);
         daily.set("visit_date", date + " 00:00:00.000Z");
         daily.set("user_id", userId);
@@ -293,28 +262,31 @@ function applyRollupForRow(r, newDomainCache) {
         if (newDomainCache.has(cacheKey)) {
             isNewDomainForUser = false;
         } else {
-            const prior = findOrNull("history_daily", "user_id = {:u} && domain = {:d}", { u: userId, d: domain });
+            const prior = findOrNull(app, "history_daily", "user_id = {:u} && domain = {:d}", { u: userId, d: domain });
             isNewDomainForUser = !prior;
             newDomainCache.set(cacheKey, true);
         }
     }
-    daily.set("visits", (Number(daily.get("visits")) || 0) + 1);
+    daily.set("visits", (Number(daily.get("visits")) || 0) + visitCount);
     daily.set("visit_count_sum", (Number(daily.get("visit_count_sum")) || 0) + visitCount);
     daily.set("duration_sum", (Number(daily.get("duration_sum")) || 0) + duration);
-    if (searchQuery) daily.set("search_count", (Number(daily.get("search_count")) || 0) + 1);
-    daily.set("last_visit", visitTime);
-    $app.save(daily);
+    if (searchQuery) daily.set("search_count", (Number(daily.get("search_count")) || 0) + visitCount);
+    if (!daily.getString("first_visit") || new Date(visitTime) < new Date(daily.getString("first_visit"))) daily.set("first_visit", visitTime);
+    if (!daily.getString("last_visit") || new Date(visitTime) > new Date(daily.getString("last_visit"))) daily.set("last_visit", visitTime);
+    app.save(daily);
 
-    let hourly = findOrNull(
+    let hourly = findOrNull(app,
         "history_hourly_profile",
-        "user_id = {:u} && weekday = {:w} && hour = {:h}",
-        { u: userId, w: weekday, h: hour }
+        "visit_date >= {:start} && visit_date < {:end} && user_id = {:u} && domain = {:d} && hour = {:h}",
+        { start: date + " 00:00:00.000Z", end: date + " 23:59:59.999Z", u: userId, d: domain, h: hour }
     );
     if (!hourly) {
-        const col = $app.findCollectionByNameOrId("history_hourly_profile");
+        const col = app.findCollectionByNameOrId("history_hourly_profile");
         hourly = new Record(col);
         hourly.set("user_id", userId);
         hourly.set("user_email", userEmail);
+        hourly.set("visit_date", date + " 00:00:00.000Z");
+        hourly.set("domain", domain);
         hourly.set("weekday", weekday);
         hourly.set("hour", hour);
         hourly.set("visits", 0);
@@ -322,11 +294,11 @@ function applyRollupForRow(r, newDomainCache) {
     }
     hourly.set("visits", (Number(hourly.get("visits")) || 0) + visitCount);
     if (flagged) hourly.set("flagged_visits", (Number(hourly.get("flagged_visits")) || 0) + visitCount);
-    $app.save(hourly);
+    app.save(hourly);
 
-    let totals = findOrNull("history_user_totals", "user_id = {:u}", { u: userId });
+    let totals = findOrNull(app, "history_user_totals", "user_id = {:u}", { u: userId });
     if (!totals) {
-        const col = $app.findCollectionByNameOrId("history_user_totals");
+        const col = app.findCollectionByNameOrId("history_user_totals");
         totals = new Record(col);
         totals.set("user_id", userId);
         totals.set("user_email", userEmail);
@@ -341,127 +313,63 @@ function applyRollupForRow(r, newDomainCache) {
     totals.set("total_visits", (Number(totals.get("total_visits")) || 0) + visitCount);
     totals.set("total_duration", (Number(totals.get("total_duration")) || 0) + duration);
     if (flagged) totals.set("total_flagged", (Number(totals.get("total_flagged")) || 0) + visitCount);
-    if (searchQuery) totals.set("total_searches", (Number(totals.get("total_searches")) || 0) + 1);
+    if (searchQuery) totals.set("total_searches", (Number(totals.get("total_searches")) || 0) + visitCount);
     if (isNewDomainForUser) totals.set("unique_domains", (Number(totals.get("unique_domains")) || 0) + 1);
-    totals.set("last_seen", visitTime);
-    $app.save(totals);
+    if (!totals.getString("first_seen") || new Date(visitTime) < new Date(totals.getString("first_seen"))) totals.set("first_seen", visitTime);
+    if (!totals.getString("last_seen") || new Date(visitTime) > new Date(totals.getString("last_seen"))) totals.set("last_seen", visitTime);
+    app.save(totals);
 
     if (searchQuery) {
-        let search = findOrNull(
+        let search = findOrNull(app,
             "history_search_daily",
-            "visit_date >= {:start} && visit_date < {:end} && user_id = {:u} && search_query = {:q}",
-            { start: date + " 00:00:00.000Z", end: date + " 23:59:59.999Z", u: userId, q: searchQuery }
+            "visit_date >= {:start} && visit_date < {:end} && user_id = {:u} && domain = {:d} && search_query = {:q}",
+            { start: date + " 00:00:00.000Z", end: date + " 23:59:59.999Z", u: userId, d: domain, q: searchQuery }
         );
         if (!search) {
-            const col = $app.findCollectionByNameOrId("history_search_daily");
+            const col = app.findCollectionByNameOrId("history_search_daily");
             search = new Record(col);
             search.set("visit_date", date + " 00:00:00.000Z");
             search.set("user_id", userId);
             search.set("user_email", userEmail);
+            search.set("domain", domain);
             search.set("search_query", searchQuery);
             search.set("count", 0);
         }
         search.set("count", (Number(search.get("count")) || 0) + visitCount);
-        search.set("last_seen", visitTime);
-        $app.save(search);
+        if (!search.getString("last_seen") || new Date(visitTime) > new Date(search.getString("last_seen"))) search.set("last_seen", visitTime);
+        app.save(search);
     }
 }
 
 function runRollupTick() {
+    const pause = findOrNull($app, "system_state", "key = {:k}", { k: "rollup_paused" });
+    if (pause && pause.getString("value") === "true") return { processed: 0, paused: true };
     const cursorRec = getCursor();
-    const cursorStr = cursorRec.getString("value");
-    const endTimeMs = Date.now() - SAFETY_BUFFER_MS;
-    const endTimeStr = pbDateString(new Date(endTimeMs));
-
-    if (cursorStr >= endTimeStr) return { processed: 0, merged: 0 };
+    const cursor = cursorRec.getString("value").split("|");
+    const cursorTime = cursor[0];
+    const cursorId = cursor[1] || "";
+    const endTimeStr = pbDateString(new Date(Date.now() - SAFETY_BUFFER_MS));
+    if (cursorTime >= endTimeStr) return { processed: 0 };
 
     let processedCount = 0;
-    let mergedCount = 0;
-
     $app.runInTransaction((txApp) => {
         const rows = txApp.findRecordsByFilter(
             "history",
-            "created > {:c} && created <= {:e}",
-            "+visit_time",
-            5000,
-            0,
-            { c: cursorStr, e: endTimeStr }
+            "(created > {:c} || (created = {:c} && id > {:id})) && created <= {:e}",
+            "+created,+id", 5000, 0,
+            { c: cursorTime, id: cursorId, e: endTimeStr }
         );
         processedCount = rows.length;
-
-        if (rows.length === 0) {
-            cursorRec.set("value", endTimeStr);
-            txApp.save(cursorRec);
-            return;
-        }
-
-        const { survivors, toDelete } = dedupBatch(rows);
-        mergedCount = toDelete.length;
-
-        for (const r of survivors) txApp.save(r);
-        for (const r of toDelete) txApp.delete(r);
-
         const newDomainCache = new Map();
-        for (const r of survivors) applyRollupForRow(r, newDomainCache);
-
-        cursorRec.set("value", endTimeStr);
+        for (const r of rows) applyRollupForRow(txApp, r, newDomainCache);
+        const last = rows.length ? rows[rows.length - 1] : null;
+        cursorRec.set("value", last
+            ? last.getString("created") + "|" + last.id
+            : endTimeStr + "|");
         txApp.save(cursorRec);
     });
-
-    $app.logger().info(
-        "history rollup tick",
-        "processed", processedCount,
-        "merged", mergedCount,
-        "cursor", endTimeStr,
-    );
-    return { processed: processedCount, merged: mergedCount };
-}
-
-// Patterns matched against the `domain` field (which is host:port).
-// Using exact + ":" prefix instead of plain contains avoids false-positives
-// on hypothetical real domains that happen to embed these substrings.
-//
-// Edit this list to extend (e.g. add `10.` for the 10.0.0.0/8 RFC1918
-// range, or `172.16.` through `172.31.` for the 172.16/12 range).
-const PRIVATE_HOST_FILTERS = [
-    'domain = "localhost"',
-    'domain ~ "localhost:"',
-    'domain = "127.0.0.1"',
-    'domain ~ "127.0.0.1:"',
-    'domain ~ "192.168."',
-    'domain ~ "[::1]"',
-];
-
-function purgePrivateNetworkRecords() {
-    const filter = PRIVATE_HOST_FILTERS.join(" || ");
-    let deletedHistory = 0;
-    let deletedDaily = 0;
-    let deletedSearchByDomain = 0;
-
-    $app.runInTransaction((txApp) => {
-        // history (raw rows)
-        const histRows = txApp.findRecordsByFilter("history", filter, "", 50000, 0);
-        for (const r of histRows) txApp.delete(r);
-        deletedHistory = histRows.length;
-
-        // history_daily — same domain semantics, same filter works.
-        const dailyRows = txApp.findRecordsByFilter("history_daily", filter, "", 50000, 0);
-        for (const r of dailyRows) txApp.delete(r);
-        deletedDaily = dailyRows.length;
-
-        // history_search_daily has no `domain` column, but searches against
-        // localhost/private hosts are vanishingly rare in practice, so we
-        // leave it alone. history_hourly_profile and history_user_totals
-        // also lack a domain dimension; their counts may be slightly inflated
-        // by purged rows, which is acceptable for a dev-cleanup job.
-    });
-
-    $app.logger().info(
-        "purged private-network history",
-        "history", deletedHistory,
-        "history_daily", deletedDaily,
-    );
-    return { deletedHistory, deletedDaily, deletedSearchByDomain };
+    $app.logger().info("history rollup tick", "processed", processedCount);
+    return { processed: processedCount };
 }
 
 function notifyFlaggedHit(record) {
@@ -545,6 +453,5 @@ module.exports = {
     enrichRecord,
     runRollupTick,
     seedDomainCategoriesIfEmpty,
-    purgePrivateNetworkRecords,
     notifyFlaggedHit,
 };

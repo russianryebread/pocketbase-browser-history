@@ -4,27 +4,12 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>PocketHistory</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script>
-            tailwind.config = {
-                theme: {
-                    extend: {
-                        fontFamily: {
-                            sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-                            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
-                        },
-                    },
-                },
-            };
-        </script>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/pocketbase/0.21.3/pocketbase.umd.js"></script>
+        <link rel="stylesheet" href="styles.css" />
+        <script src="vendor/chart.umd.js"></script>
+        <script src="vendor/pocketbase.iife.js"></script>
         <script src="categories.js"></script>
         <script src="app.js"></script>
-        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js"></script>
+        <script defer src="vendor/alpine.min.js"></script>
         <style>
             [x-cloak] { display: none !important; }
             html, body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
@@ -52,6 +37,9 @@
                     <p class="text-sm text-neutral-500">Sign in to your dashboard</p>
                 </div>
                 <div class="space-y-3">
+                    <label class="block text-xs font-medium text-neutral-600">PocketBase URL
+                        <input type="url" x-model="serverUrl" class="mt-1 w-full px-3 py-2 border rounded-md text-sm" placeholder="https://your-pocketbase.example" />
+                    </label>
                     <input type="email" x-model="username" placeholder="Email" @keydown.enter="login()" class="w-full px-3 py-2 text-sm rounded-md border border-neutral-300 bg-white placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900" />
                     <input type="password" x-model="password" placeholder="Password" @keydown.enter="login()" class="w-full px-3 py-2 text-sm rounded-md border border-neutral-300 bg-white placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900" />
                     <button @click="login()" :disabled="loading" class="w-full px-3 py-2 rounded-md text-sm font-medium text-white bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 transition">
@@ -184,7 +172,7 @@
                             <div class="flex items-baseline justify-between mb-4">
                                 <h3 class="text-sm font-semibold">Weekly pattern</h3>
                                 <span class="text-xs text-neutral-400">
-                                    <span x-text="heatmap.source === 'window' ? 'current window · local time' : 'lifetime · server time'"></span>
+                                    <span>current window · device local time</span>
                                     · red border = flagged
                                 </span>
                             </div>

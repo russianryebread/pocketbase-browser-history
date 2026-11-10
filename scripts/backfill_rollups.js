@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 
-// One-shot backfill: scan the entire `history` table, enrich each row
-// (category/flagged/domain/search_query) and rebuild the four rollup
-// collections from scratch. Safe to re-run — it deletes and rewrites.
+// One-shot backfill: scan history and rebuild the four rollup collections.
+// Safe to re-run: it pauses live rollups, then deletes and rewrites summaries.
 //
 // Usage:
 //   POCKETBASE_URL=https://example.com \
@@ -22,11 +21,9 @@ const ADMIN_PASSWORD = process.env.PB_ADMIN_PASSWORD;
 const PAGE_SIZE = Number(process.env.PAGE_SIZE) || 1000;
 const FLUSH_BATCH = Number(process.env.FLUSH_BATCH) || 500;
 const UPDATE_HISTORY = process.env.UPDATE_HISTORY !== "0";
-const DEDUP = process.env.DEDUP !== "0";
-const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
-if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-    console.error("Set PB_ADMIN_EMAIL and PB_ADMIN_PASSWORD env vars.");
+if (!URL_BASE || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
+    console.error("Set POCKETBASE_URL, PB_ADMIN_EMAIL, and PB_ADMIN_PASSWORD.");
     process.exit(1);
 }
 
@@ -51,11 +48,15 @@ async function main() {
         await pb.admins.authWithPassword(ADMIN_EMAIL, ADMIN_PASSWORD);
     }
     console.log("Auth OK.");
+    await fakeGlobal.HistoryCategories.loadFromPB(pb);
+    const { batch } = await pb.settings.getAll();
+    const batchSize = batch?.enabled ? Math.min(25, batch.maxRequests) : 0;
 
-    await truncate("history_daily");
-    await truncate("history_hourly_profile");
-    await truncate("history_user_totals");
-    await truncate("history_search_daily");
+    const cutoff = new Date().toISOString().replace("T", " ").replace("Z", "");
+    await setState("rollup_paused", "true");
+    for (const name of ["history_daily", "history_hourly_profile", "history_user_totals", "history_search_daily"]) {
+        await pb.collections.truncate(name);
+    }
     console.log("Rollup tables truncated.");
 
     const daily = new Map();
@@ -63,26 +64,30 @@ async function main() {
     const totals = new Map();
     const search = new Map();
     const seenDomains = new Map();
-    const leaders = new Map(); // (user_id|url) -> { row, visitTimeMs, dailyKey, hourlyKey, searchKey }
 
-    let page = 1;
+    let lastId = "";
     let processed = 0;
-    let mergedCount = 0;
-    let totalPages = 1;
-
-    while (page <= totalPages) {
-        const result = await pb.collection("history").getList(page, PAGE_SIZE, {
-            sort: "+visit_time",
-            fields: "id,url,title,visit_time,visit_count,user_email,user_id,duration,category,flagged,domain,path,query,protocol,search_query",
+    while (true) {
+        const result = await pb.collection("history").getList(1, PAGE_SIZE, {
+            filter: pb.filter('id > {:id} && created <= {:cutoff}', { id: lastId, cutoff }),
+            sort: "+id",
+            skipTotal: true,
+            fields: "id,created,url,title,visit_time,visit_count,user_email,user_id,duration,timezone_offset,category,flagged,domain,path,query,protocol,search_query",
         });
-        totalPages = result.totalPages;
+        if (!result.items.length) break;
 
         for (const row of result.items) {
-            const info = classify(row.url || "");
-            const query = extractSearchQuery(row.url || "");
+            const parsed = classify(row.url || "");
+            const info = UPDATE_HISTORY
+                ? parsed
+                : { ...parsed, category: row.category || parsed.category, flagged: !!row.flagged };
+            const domain = info.domain || row.domain || "(unknown)";
+            const query = UPDATE_HISTORY
+                ? extractSearchQuery(row.url || "")
+                : row.search_query || extractSearchQuery(row.url || "");
             const visitTime = row.visit_time || row.created;
-            const date = String(visitTime).substring(0, 10);
-            const dt = new Date(visitTime);
+            const dt = new Date(new Date(visitTime).getTime() - (Number(row.timezone_offset) || 0) * 60000);
+            const date = dt.toISOString().substring(0, 10);
             const weekday = dt.getUTCDay();
             const hour = dt.getUTCHours();
             const userId = row.user_id || "";
@@ -90,74 +95,29 @@ async function main() {
             const visitCount = Number(row.visit_count) || 1;
             const duration = Number(row.duration) || 0;
 
-            // Dedup pass: same (user_id, url) within 10 min collapses into the leader.
-            if (DEDUP) {
-                const visitTimeMs = new Date(visitTime).getTime();
-                const dKey = userId + "|" + (row.url || "");
-                const leader = leaders.get(dKey);
-                if (leader && (visitTimeMs - leader.visitTimeMs) <= DEDUP_WINDOW_MS) {
-                    leader.row.visit_count = (Number(leader.row.visit_count) || 1) + visitCount;
-                    if (UPDATE_HISTORY) {
-                        try {
-                            await pb.collection("history").update(leader.row.id, { visit_count: leader.row.visit_count });
-                            await pb.collection("history").delete(row.id);
-                        } catch (e) { console.warn("merge failed for", row.id, e.message); }
-                    }
-                    // Augment the leader's already-counted rollups with this row's weight.
-                    const dEntry = daily.get(leader.dailyKey);
-                    if (dEntry) {
-                        dEntry.visit_count_sum += visitCount;
-                        dEntry.duration_sum += duration;
-                        if (visitTime > dEntry.last_visit) dEntry.last_visit = visitTime;
-                    }
-                    const hEntry = hourly.get(leader.hourlyKey);
-                    if (hEntry) {
-                        hEntry.visits += visitCount;
-                        if (info.flagged) hEntry.flagged_visits += visitCount;
-                    }
-                    const tEntry = totals.get(userId);
-                    if (tEntry) {
-                        tEntry.total_visits += visitCount;
-                        tEntry.total_duration += duration;
-                        if (info.flagged) tEntry.total_flagged += visitCount;
-                        if (visitTime > tEntry.last_seen) tEntry.last_seen = visitTime;
-                    }
-                    if (leader.searchKey) {
-                        const sEntry = search.get(leader.searchKey);
-                        if (sEntry) {
-                            sEntry.count += visitCount;
-                            if (visitTime > sEntry.last_seen) sEntry.last_seen = visitTime;
-                        }
-                    }
-                    mergedCount += 1;
-                    continue;
-                }
-            }
-
             // Optionally enrich raw history rows in place
             if (UPDATE_HISTORY) {
                 const patch = {};
-                if (!row.category) patch.category = info.category;
+                if (row.category !== info.category) patch.category = info.category;
                 if (!row.domain || row.domain !== info.domain) patch.domain = info.domain;
                 if (!row.path) patch.path = info.path;
                 if (!row.query && info.query) patch.query = info.query;
                 if (!row.protocol) patch.protocol = info.protocol;
-                if (row.flagged === undefined || row.flagged === null) patch.flagged = info.flagged;
-                if (!row.search_query && query) patch.search_query = query;
+                if (!!row.flagged !== info.flagged) patch.flagged = info.flagged;
+                if (row.search_query !== query) patch.search_query = query;
                 if (Object.keys(patch).length) {
-                    try { await pb.collection("history").update(row.id, patch); }
-                    catch (e) { console.warn("history update failed for", row.id, e.message); }
+                    await pb.collection("history").update(row.id, patch);
                 }
             }
 
-            const dailyKey = `${date}|${userId}|${info.domain}`;
+            const dailyKey = `${date}|${userId}|${domain}`;
             let d = daily.get(dailyKey);
             if (!d) {
                 d = {
                     visit_date: date + " 00:00:00.000Z",
                     user_id: userId,
                     user_email: userEmail,
-                    domain: info.domain,
+                    domain,
                     category: info.category,
                     flagged: info.flagged,
                     visits: 0,
@@ -169,21 +129,21 @@ async function main() {
                 };
                 daily.set(dailyKey, d);
             }
-            d.visits += 1;
+            d.visits += visitCount;
             d.visit_count_sum += visitCount;
             d.duration_sum += duration;
-            if (query) d.search_count += 1;
+            if (query) d.search_count += visitCount;
             if (visitTime > d.last_visit) d.last_visit = visitTime;
             if (visitTime < d.first_visit) d.first_visit = visitTime;
 
-            const hourlyKey = `${userId}|${weekday}|${hour}`;
+            const hourlyKey = `${date}|${userId}|${domain}|${hour}`;
             let h = hourly.get(hourlyKey);
             if (!h) {
-                h = { user_id: userId, user_email: userEmail, weekday, hour, visits: 0, flagged_visits: 0 };
+                h = { visit_date: date + " 00:00:00.000Z", user_id: userId, user_email: userEmail, domain, weekday, hour, visits: 0, flagged_visits: 0 };
                 hourly.set(hourlyKey, h);
             }
-            h.visits += 1;
-            if (info.flagged) h.flagged_visits += 1;
+            h.visits += visitCount;
+            if (info.flagged) h.flagged_visits += visitCount;
 
             let t = totals.get(userId);
             if (!t) {
@@ -195,99 +155,94 @@ async function main() {
                 };
                 totals.set(userId, t);
             }
-            t.total_visits += 1;
+            t.total_visits += visitCount;
             t.total_duration += duration;
-            if (info.flagged) t.total_flagged += 1;
-            if (query) t.total_searches += 1;
+            if (info.flagged) t.total_flagged += visitCount;
+            if (query) t.total_searches += visitCount;
             if (visitTime > t.last_seen) t.last_seen = visitTime;
             if (visitTime < t.first_seen) t.first_seen = visitTime;
             if (!t.user_email && userEmail) t.user_email = userEmail;
 
-            const seenKey = `${userId}|${info.domain}`;
+            const seenKey = `${userId}|${domain}`;
             if (!seenDomains.has(seenKey)) {
                 seenDomains.set(seenKey, true);
                 t.unique_domains += 1;
             }
 
-            const sKey = query ? `${date}|${userId}|${query}` : null;
+            const sKey = query ? `${date}|${userId}|${domain}|${query}` : null;
             if (sKey) {
                 let s = search.get(sKey);
                 if (!s) {
                     s = {
                         visit_date: date + " 00:00:00.000Z",
-                        user_id: userId, user_email: userEmail,
+                        user_id: userId, user_email: userEmail, domain,
                         search_query: query, count: 0, last_seen: visitTime,
                     };
                     search.set(sKey, s);
                 }
-                s.count += 1;
+                s.count += visitCount;
                 if (visitTime > s.last_seen) s.last_seen = visitTime;
             }
 
-            // Register this row as a potential dedup leader for the next visit
-            if (DEDUP) {
-                const dKey = userId + "|" + (row.url || "");
-                leaders.set(dKey, {
-                    row,
-                    visitTimeMs: new Date(visitTime).getTime(),
-                    dailyKey,
-                    hourlyKey,
-                    searchKey: sKey,
-                });
-            }
-        }
-
-        // Periodically prune stale leaders to bound memory
-        if (DEDUP && leaders.size > 50000) {
-            const cutoffMs = Date.now() - DEDUP_WINDOW_MS;
-            for (const [k, v] of leaders) {
-                if (v.visitTimeMs < cutoffMs) leaders.delete(k);
-            }
         }
 
         processed += result.items.length;
-        console.log(`Page ${page}/${totalPages} — processed ${processed} rows (merged ${mergedCount}; daily=${daily.size}, hourly=${hourly.size}, totals=${totals.size}, search=${search.size})`);
-        page += 1;
+        lastId = result.items[result.items.length - 1].id;
+        console.log(`Through ${lastId} — processed ${processed} rows (daily=${daily.size}, hourly=${hourly.size}, totals=${totals.size}, search=${search.size})`);
     }
 
-    console.log(`Dedup merged ${mergedCount} rows. Flushing rollups...`);
-    await flush("history_daily", Array.from(daily.values()));
-    await flush("history_hourly_profile", Array.from(hourly.values()));
-    await flush("history_user_totals", Array.from(totals.values()));
-    await flush("history_search_daily", Array.from(search.values()));
+    console.log("Flushing rollups...");
+    await flush("history_daily", Array.from(daily.values()), batchSize);
+    await flush("history_hourly_profile", Array.from(hourly.values()), batchSize);
+    await flush("history_user_totals", Array.from(totals.values()), batchSize);
+    await flush("history_search_daily", Array.from(search.values()), batchSize);
 
     // Reset rollup cursor so the live cron picks up from now-onward only.
     try {
-        const cursorVal = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString().replace("T", " ").replace("Z", "");
+        const cursorVal = cutoff + "|";
         const existing = await pb.collection("system_state").getFirstListItem('key="rollup_cursor"').catch(() => null);
         if (existing) await pb.collection("system_state").update(existing.id, { value: cursorVal });
         else await pb.collection("system_state").create({ key: "rollup_cursor", value: cursorVal });
         console.log(`Rollup cursor set to ${cursorVal}`);
     } catch (e) {
-        console.warn("Could not write rollup cursor:", e.message);
+        throw new Error("Could not write rollup cursor: " + e.message);
     }
+    await setState("rollup_paused", "false");
     console.log("Done.");
 }
 
-async function truncate(name) {
-    let page = 1;
-    while (true) {
-        const r = await pb.collection(name).getList(page, 500, { fields: "id" });
-        if (r.items.length === 0) break;
-        await Promise.all(r.items.map((it) => pb.collection(name).delete(it.id)));
-        if (r.items.length < 500) break;
-    }
+async function setState(key, value) {
+    const existing = await pb.collection("system_state").getFirstListItem(pb.filter('key = {:key}', { key })).catch(() => null);
+    if (existing) await pb.collection("system_state").update(existing.id, { value });
+    else await pb.collection("system_state").create({ key, value });
 }
 
-async function flush(name, rows) {
-    let i = 0;
-    for (const row of rows) {
-        try { await pb.collection(name).create(row); }
-        catch (e) { console.warn(`${name} create failed:`, e.message, row); }
-        i += 1;
-        if (i % FLUSH_BATCH === 0) console.log(`  ${name}: ${i}/${rows.length}`);
+async function flush(name, rows, batchSize) {
+    const chunkSize = batchSize || 1;
+    let nextLog = FLUSH_BATCH;
+    for (let i = 0; i < rows.length; i += chunkSize) {
+        if (batchSize) {
+            const batch = pb.createBatch();
+            for (const row of rows.slice(i, i + chunkSize)) batch.collection(name).create(row);
+            try {
+                await batch.send();
+            } catch (error) {
+                const failures = Object.values(error.response?.data?.requests || {});
+                const detail = failures.map(({ response }) => ({
+                    message: response?.message,
+                    fields: Object.fromEntries(Object.entries(response?.data || {}).map(([field, value]) => [field, value.code])),
+                }));
+                throw new Error(`Could not write ${name} rows ${i + 1}–${Math.min(i + chunkSize, rows.length)}: ${error.message} ${JSON.stringify(detail)}`);
+            }
+        } else {
+            await pb.collection(name).create(rows[i]);
+        }
+        if (i + chunkSize >= nextLog) {
+            console.log(`  ${name}: ${Math.min(i + chunkSize, rows.length)}/${rows.length}`);
+            nextLog += FLUSH_BATCH;
+        }
     }
-    console.log(`  ${name}: ${i}/${rows.length} done`);
+    console.log(`  ${name}: ${rows.length}/${rows.length} done`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

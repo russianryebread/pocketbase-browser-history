@@ -1,0 +1,13 @@
+{
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  },
+  "dependencies": {
+    "alpinejs": "^3.14.1",
+    "chart.js": "^4.4.0",
+    "pocketbase": "^0.26.8"
+  },
+  "scripts": {
+    "build:css": "tailwindcss -i input.css -o styles.css --minify --content index.html --content app.js"
+  }
+}

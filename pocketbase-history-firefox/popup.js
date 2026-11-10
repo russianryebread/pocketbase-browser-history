@@ -1,74 +1,49 @@
-const POCKETBASE_URL = 'https://az.hoshor.me:8001'
-const COLLECTION_NAME = 'history'
+const api = typeof browser !== 'undefined' ? browser : chrome;
+const $ = (id) => document.getElementById(id);
 
-document.addEventListener('DOMContentLoaded', async () => {
-  const urlInput = document.getElementById('pocketbaseUrl');
-  const emailInput = document.getElementById('userEmail');
-  const userIdInput = document.getElementById('userId');
-  const saveBtn = document.getElementById('saveConfig');
-  const syncBtn = document.getElementById('syncNow');
-  const testBtn = document.getElementById('testConnection');
-  const status = document.getElementById('status');
+function status(message, error = false) {
+  $('status').textContent = message;
+  $('status').className = error ? 'error' : 'success';
+}
 
-  // Load saved config
-  const config = await browser.storage.local.get(['pocketbaseUrl', 'collectionName', 'userEmail', 'userId']);
-  urlInput.value = config.pocketbaseUrl || POCKETBASE_URL;
-  emailInput.value = config.userEmail || '';
-  userIdInput.value = config.userId || generateUniqueId();
+async function refreshStatus() {
+  const state = await api.storage.local.get(['pocketbaseUrl', 'userEmail', 'lastSuccessAt', 'lastError', 'backfillRanges', 'backfillCoveredUrls', 'backfillComplete']);
+  $('pocketbaseUrl').value = state.pocketbaseUrl || '';
+  $('userEmail').value = state.userEmail || '';
+  if (state.lastError) status(state.lastError, true);
+  else if (state.userEmail) status(`Signed in as ${state.userEmail}. Last sync: ${state.lastSuccessAt ? new Date(state.lastSuccessAt).toLocaleString() : 'pending'}. Initial import: ${state.backfillComplete ? 'complete' : `${state.backfillRanges?.length || 0} ranges remaining`}.`);
+}
 
-  // Generate unique ID if none exists
-  if (!config.userId) {
-    const newId = generateUniqueId();
-    userIdInput.value = newId;
-    await browser.storage.local.set({ userId: newId });
-  }
-
-  // Save configuration
-  saveBtn.addEventListener('click', async () => {
-    await browser.storage.local.set({
-      pocketbaseUrl: urlInput.value,
-      collectionName: COLLECTION_NAME,
-      userEmail: emailInput.value
-    });
-    showStatus('Configuration saved!', 'success');
-  });
-
-  // Sync now
-  syncBtn.addEventListener('click', async () => {
-    showStatus('Syncing...', 'success');
+document.addEventListener('DOMContentLoaded', () => {
+  refreshStatus();
+  $('saveConfig').addEventListener('click', async () => {
     try {
-      await browser.runtime.sendMessage({ action: 'syncNow' });
-      showStatus('Sync completed!', 'success');
-    } catch (error) {
-      showStatus('Sync failed: ' + error.message, 'error');
-    }
+      const url = new URL($('pocketbaseUrl').value.trim());
+      if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Use HTTPS, or HTTP on localhost');
+      const base = url.origin;
+      const granted = await api.permissions.request({ origins: [`${url.protocol}//${url.hostname}/*`] });
+      if (!granted) throw new Error('PocketBase host permission was denied');
+      const response = await fetch(`${base}/api/collections/users/auth-with-password`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity: $('userEmail').value.trim(), password: $('password').value })
+      });
+      if (!response.ok) throw new Error('Sign in failed; check the URL, email, and password');
+      const auth = await response.json();
+      if (!auth.token || !auth.record?.email) throw new Error('PocketBase returned an invalid sign-in response');
+      const result = await api.runtime.sendMessage({
+        action: 'saveConfig', pocketbaseUrl: base, userEmail: auth.record.email, authToken: auth.token
+      });
+      if (!result?.ok) throw new Error(result?.error || 'Could not save PocketBase settings');
+      $('password').value = '';
+      status(`Signed in as ${auth.record.email}. Initial history import will begin on sync.`);
+    } catch (error) { status(error.message, true); }
   });
-
-  // Test connection
-  testBtn.addEventListener('click', async () => {
-    showStatus('Testing connection...', 'success');
+  $('syncNow').addEventListener('click', async () => {
+    status('Syncing…');
     try {
-      const response = await fetch(`${urlInput.value}/api/health`);
-      if (response.ok) {
-        showStatus('Connection successful!', 'success');
-      } else {
-        showStatus('Connection failed - check URL', 'error');
-      }
-    } catch (error) {
-      showStatus('Connection failed: ' + error.message, 'error');
-    }
+      const result = await api.runtime.sendMessage({ action: 'syncNow' });
+      if (!result?.ok) throw new Error(result?.error || 'Sync failed');
+      status(`Synced ${result.uploaded} visits. Initial import ranges remaining: ${result.backfillRemaining}.`);
+    } catch (error) { status(error.message, true); }
   });
-
-  function showStatus(message, type) {
-    status.textContent = message;
-    status.className = `status ${type}`;
-    setTimeout(() => {
-      status.textContent = '';
-      status.className = '';
-    }, 3000);
-  }
-
-  function generateUniqueId() {
-    return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  }
 });

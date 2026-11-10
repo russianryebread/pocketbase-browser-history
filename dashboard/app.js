@@ -1,4 +1,4 @@
-const POCKETBASE_URL = "https://az.hoshor.me:8001";
+const DEFAULT_POCKETBASE_URL = window.POCKETHISTORY_URL || window.localStorage.getItem("pockethistory-url") || window.location.origin;
 const RAW_LIMIT = 50000;
 const PAGE_SIZE = 500;
 const ROLLUP_THRESHOLD_DAYS = 90;
@@ -10,6 +10,7 @@ function dashboard() {
         authed: false,
         username: "",
         password: "",
+        serverUrl: DEFAULT_POCKETBASE_URL,
         loading: false,
         loadingMessage: "",
         error: "",
@@ -53,34 +54,35 @@ function dashboard() {
 
         get rangeBounds() {
             const now = new Date();
-            const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const day = 24 * 60 * 60 * 1000;
             switch (this.rangePreset) {
                 case "today":
                     return { from: today, to: new Date(today.getTime() + day) };
                 case "7d":
-                    return { from: new Date(today.getTime() - 7 * day), to: new Date(today.getTime() + day) };
+                    return { from: addDays(today, -6), to: addDays(today, 1) };
                 case "30d":
-                    return { from: new Date(today.getTime() - 30 * day), to: new Date(today.getTime() + day) };
+                    return { from: addDays(today, -29), to: addDays(today, 1) };
                 case "90d":
-                    return { from: new Date(today.getTime() - 90 * day), to: new Date(today.getTime() + day) };
+                    return { from: addDays(today, -89), to: addDays(today, 1) };
                 case "1y":
-                    return { from: new Date(today.getTime() - 365 * day), to: new Date(today.getTime() + day) };
+                    return { from: addDays(today, -364), to: addDays(today, 1) };
                 case "all":
                     return { from: new Date("1970-01-01T00:00:00Z"), to: new Date(today.getTime() + day) };
                 case "custom":
                     return {
-                        from: this.customFrom ? new Date(this.customFrom + "T00:00:00Z") : new Date(today.getTime() - 30 * day),
-                        to: this.customTo ? new Date(this.customTo + "T23:59:59Z") : new Date(today.getTime() + day),
+                        from: this.customFrom ? new Date(this.customFrom + "T00:00:00") : addDays(today, -29),
+                        to: this.customTo ? addDays(new Date(this.customTo + "T00:00:00"), 1) : addDays(today, 1),
                     };
                 default:
-                    return { from: new Date(today.getTime() - 30 * day), to: new Date(today.getTime() + day) };
+                    return { from: addDays(today, -29), to: addDays(today, 1) };
             }
         },
 
         get rangeDays() {
             const { from, to } = this.rangeBounds;
-            return Math.max(1, Math.ceil((to - from) / (24 * 60 * 60 * 1000)));
+            const utcDay = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+            return Math.max(1, Math.round((utcDay(to) - utcDay(from)) / 86400000));
         },
 
         get useRollups() {
@@ -88,14 +90,19 @@ function dashboard() {
         },
 
         async init() {
-            this.pb = new PocketBase(POCKETBASE_URL);
+            this.pb = new PocketBase(this.serverUrl);
             // Disable auto-cancellation: paginating the same collection fires
             // multiple getList calls with the same default requestKey, which
             // would otherwise cancel each other.
             this.pb.autoCancellation(false);
             if (this.pb.authStore.isValid) {
-                this.authed = true;
-                await this.afterAuth();
+                try {
+                    await this.pb.collection("users").authRefresh();
+                    this.authed = true;
+                    await this.afterAuth();
+                } catch (_) {
+                    this.pb.authStore.clear();
+                }
             }
             // Re-render only on coarse state changes. Per-array watches would
             // each fire during a single loadData() call (4 array assignments
@@ -115,7 +122,15 @@ function dashboard() {
             this.loading = true;
             this.loadingMessage = "Authenticating...";
             try {
+                const url = new URL(this.serverUrl);
+                if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("Use HTTPS or localhost");
+                if (this.pb.baseUrl !== url.origin) {
+                    this.pb.authStore.clear();
+                    this.pb = new PocketBase(url.origin);
+                    this.pb.autoCancellation(false);
+                }
                 await this.pb.collection("users").authWithPassword(this.username, this.password);
+                window.localStorage.setItem("pockethistory-url", url.origin);
                 this.authed = true;
                 this.password = "";
                 await this.afterAuth();
@@ -231,8 +246,8 @@ function dashboard() {
 
                 if (this.useRollups) {
                     this.loadingMessage = "Loading rollups...";
-                    const dailyFilter = `visit_date >= "${fromIso}" && visit_date <= "${toIso}"${userClause}`;
-                    const searchFilter = `visit_date >= "${fromIso}" && visit_date <= "${toIso}"${userClause}`;
+                    const dailyFilter = `visit_date >= "${rollupDate(from)}" && visit_date < "${rollupDate(to)}"${userClause}`;
+                    const searchFilter = dailyFilter;
                     const [daily, search] = await Promise.all([
                         this.fetchAll("history_daily", dailyFilter, "+visit_date"),
                         this.fetchAll("history_search_daily", searchFilter, "-count"),
@@ -243,26 +258,23 @@ function dashboard() {
                     this.rowCount = daily.length + search.length;
                 } else {
                     this.loadingMessage = "Loading history...";
-                    const filter = `visit_time >= "${fromIso}" && visit_time <= "${toIso}"${userClause}`;
+                    const filter = `visit_time >= "${fromIso}" && visit_time < "${toIso}"${userClause}`;
                     const rows = await this.fetchAll(
                         "history",
                         filter,
                         "-visit_time",
-                        "id,url,title,visit_time,visit_count,user_email,user_id,duration,category,flagged,domain,path,query,protocol,search_query"
+                        "id,url,title,visit_time,visit_count,user_email,user_id,duration,timezone_offset,category,flagged,domain,path,query,protocol,search_query"
                     );
                     this.historyRows = rows;
                     this.dailyRows = [];
                     this.rowCount = rows.length;
 
-                    const dayFromIso = isoForFilter(addDays(this.rangeBounds.from, -1));
-                    const dayToIso = isoForFilter(this.rangeBounds.to);
-                    const searchFilter = `visit_date >= "${dayFromIso}" && visit_date <= "${dayToIso}"${userClause}`;
-                    this.searchRows = await this.fetchAll("history_search_daily", searchFilter, "-count").catch(() => []);
+                    this.searchRows = [];
                 }
 
                 this.loadingMessage = "Loading heatmap...";
-                const hourlyFilter = this.selectedUserEmail ? `user_email = "${escapeFilter(this.selectedUserEmail)}"` : "";
-                this.hourlyRows = await this.fetchAll("history_hourly_profile", hourlyFilter, "+weekday").catch(() => []);
+                const hourlyFilter = `visit_date >= "${rollupDate(from)}" && visit_date < "${rollupDate(to)}"${userClause}`;
+                this.hourlyRows = await this.fetchAll("history_hourly_profile", hourlyFilter, "+weekday");
 
                 if (this.selectedUserEmail) {
                     try {
@@ -296,7 +308,8 @@ function dashboard() {
                 const result = await this.pb.collection(collection).getList(page, PAGE_SIZE, opts);
                 all.push(...result.items);
                 this.loadingMessage = `Loading ${collection}: ${all.length} / ${result.totalItems}`;
-                if (result.items.length < PAGE_SIZE || all.length >= RAW_LIMIT) break;
+                if (collection === "history" && result.totalItems > RAW_LIMIT) throw new Error(`More than ${RAW_LIMIT.toLocaleString()} visits match this range. Choose a shorter range.`);
+                if (result.items.length < PAGE_SIZE) break;
                 page += 1;
             }
             return all;
@@ -326,7 +339,7 @@ function dashboard() {
                 { label: "Active Users", value: this.fmt(k.activeUsers) },
                 { label: "Avg Daily", value: this.fmt(k.avgDaily) },
                 { label: "Flagged", value: this.fmt(k.flagged), flag: k.flagged > 0 },
-                { label: "Screen Time", value: this.fmtDuration(k.totalDuration) },
+                { label: "Screen Time", value: k.totalDuration > 0 ? this.fmtDuration(k.totalDuration) : "Not measured" },
                 { label: "Searches", value: this.fmt(k.searches) },
                 { label: "Late-night", value: this.fmt(k.lateNight) },
             ];
@@ -347,7 +360,7 @@ function dashboard() {
                 }
                 let lateNight = 0;
                 for (const h of this.hourlyRows) {
-                    if (this.selectedUserEmail && h.user_email !== this.selectedUserEmail) continue;
+                    if (this.selectedDomain && h.domain !== this.selectedDomain) continue;
                     if (LATE_NIGHT_HOURS.has(h.hour)) lateNight += h.visits || 0;
                 }
                 return {
@@ -370,9 +383,8 @@ function dashboard() {
                 if (r.flagged) flagged += 1;
                 if (r.search_query) searches += 1;
                 domains.add(r.domain || HistoryCategories.getHost(r.url));
-                users.add(r.user_id);
-                const hr = new Date(r.visit_time).getHours();
-                if (LATE_NIGHT_HOURS.has(hr)) lateNight += 1;
+                users.add(r.user_email || r.user_id);
+                if (LATE_NIGHT_HOURS.has(sourceHour(r))) lateNight += r.visit_count || 1;
             }
             return {
                 totalVisits,
@@ -445,7 +457,7 @@ function dashboard() {
                 }
             } else {
                 for (const r of this.filteredHistory) {
-                    const d = localDateKey(new Date(r.visit_time));
+                    const d = sourceDateKey(r);
                     map.set(d, (map.get(d) || 0) + (r.visit_count || 1));
                 }
             }
@@ -518,12 +530,13 @@ function dashboard() {
         get topSearches() {
             const map = new Map();
             for (const r of this.searchRows) {
+                if (this.selectedDomain && r.domain !== this.selectedDomain) continue;
                 map.set(r.search_query, (map.get(r.search_query) || 0) + (r.count || 0));
             }
             if (!this.useRollups) {
-                for (const r of this.historyRows) {
+                for (const r of this.filteredHistory) {
                     if (r.search_query) {
-                        map.set(r.search_query, (map.get(r.search_query) || 0) + 1);
+                        map.set(r.search_query, (map.get(r.search_query) || 0) + (r.visit_count || 1));
                     }
                 }
             }
@@ -607,18 +620,18 @@ function dashboard() {
 
         hourTotals() {
             const arr = new Array(24).fill(0);
-            // Prefer raw rows so we can compute in the user's LOCAL timezone.
-            // Falls back to the rollup (server-tz) only if no raw data is loaded.
+            // Raw and rolled-up rows both use the visit device's local hour.
             if (this.filteredHistory.length > 0) {
                 for (const r of this.filteredHistory) {
-                    const h = new Date(r.visit_time).getHours();
+                    const h = sourceHour(r);
                     arr[h] += r.visit_count || 1;
                 }
                 return arr;
             }
-            if (!this.selectedDomain && this.hourlyRows.length) {
+            if (this.hourlyRows.length) {
                 for (const r of this.hourlyRows) {
                     if (this.selectedUserEmail && r.user_email !== this.selectedUserEmail) continue;
+                    if (this.selectedDomain && r.domain !== this.selectedDomain) continue;
                     arr[r.hour] = (arr[r.hour] || 0) + (r.visits || 0);
                 }
             }
@@ -628,17 +641,11 @@ function dashboard() {
         get heatmap() {
             const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
             const flagged = Array.from({ length: 7 }, () => new Array(24).fill(0));
-            let usedRaw = false;
-
-            // Prefer raw rows so weekday/hour are computed in the user's LOCAL
-            // timezone. Falls back to the lifetime rollup (server-tz) only
-            // when no raw rows are loaded — e.g. long-window mode.
+            // Both sources represent only the selected date range.
             if (this.filteredHistory.length > 0) {
-                usedRaw = true;
                 for (const r of this.filteredHistory) {
-                    const dt = new Date(r.visit_time);
-                    const w = dt.getDay();      // 0..6 in LOCAL tz
-                    const h = dt.getHours();    // 0..23 in LOCAL tz
+                    const w = sourceWeekday(r);
+                    const h = sourceHour(r);
                     const v = r.visit_count || 1;
                     grid[w][h] += v;
                     if (r.flagged) flagged[w][h] += v;
@@ -646,6 +653,7 @@ function dashboard() {
             } else if (this.hourlyRows.length > 0) {
                 for (const r of this.hourlyRows) {
                     if (this.selectedUserEmail && r.user_email !== this.selectedUserEmail) continue;
+                    if (this.selectedDomain && r.domain !== this.selectedDomain) continue;
                     grid[r.weekday][r.hour] += r.visits || 0;
                     flagged[r.weekday][r.hour] += r.flagged_visits || 0;
                 }
@@ -655,7 +663,7 @@ function dashboard() {
             return {
                 grid,
                 flagged,
-                source: usedRaw ? "window" : "lifetime",
+                source: "window",
                 colorAt(d, h) {
                     const v = grid[d][h];
                     if (v === 0) return "#f4f4f5";
@@ -983,17 +991,32 @@ function localDateKey(d) {
     return `${y}-${m}-${day}`;
 }
 
+function sourceDate(r) {
+    return new Date(new Date(r.visit_time).getTime() - (Number(r.timezone_offset) || 0) * 60000);
+}
+
+function sourceDateKey(r) { return sourceDate(r).toISOString().slice(0, 10); }
+function sourceHour(r) { return sourceDate(r).getUTCHours(); }
+function sourceWeekday(r) { return sourceDate(r).getUTCDay(); }
+function rollupDate(date) { return localDateKey(date) + " 00:00:00.000Z"; }
+
 function isoForFilter(date) {
     return date.toISOString().replace("T", " ").replace("Z", "");
 }
 
 function addDays(date, days) {
-    return new Date(date.getTime() + days * 86400000);
+    const out = new Date(date);
+    out.setDate(out.getDate() + days);
+    return out;
 }
 
 function downloadCsv(headers, rows, baseName) {
     const csv = [headers, ...rows]
-        .map((r) => r.map((c) => `"${(c ?? "").toString().replace(/"/g, '""')}"`).join(","))
+        .map((r) => r.map((c) => {
+            let value = (c ?? "").toString();
+            if (/^[\s]*[=+\-@]/.test(value)) value = "'" + value;
+            return `"${value.replace(/"/g, '""')}"`;
+        }).join(","))
         .join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);

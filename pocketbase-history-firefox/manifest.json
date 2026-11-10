@@ -1,19 +1,40 @@
 {
   "manifest_version": 2,
   "name": "History to PocketBase",
-  "version": "1.0",
-  "description": "Save browser history to PocketBase",
+  "version": "1.1.0",
+  "description": "Sync Firefox browsing history to a PocketBase server you choose",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pockethistory@hoshor.me",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "authenticationInfo",
+          "browsingActivity",
+          "personallyIdentifyingInfo",
+          "searchTerms"
+        ]
+      }
+    }
+  },
   "permissions": [
     "history",
     "storage",
-    "https://az.hoshor.me:8001/*"
+    "alarms"
   ],
   "background": {
-    "scripts": ["background.js"],
+    "scripts": [
+      "background.js"
+    ],
     "persistent": false
   },
   "browser_action": {
     "default_popup": "popup.html",
     "default_title": "History to PocketBase"
-  }
+  },
+  "optional_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ]
 }

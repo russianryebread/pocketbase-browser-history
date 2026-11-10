@@ -1,9 +1,9 @@
 [
   {
     "id": "pbc_3068727201",
-    "listRule": "@request.auth.id != \"\"",
-    "viewRule": "@request.auth.id != \"\"",
-    "createRule": "",
+    "listRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "viewRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "createRule": "@request.auth.id != \"\" && @request.auth.email = user_email",
     "updateRule": null,
     "deleteRule": null,
     "name": "history",
@@ -197,6 +197,44 @@
       },
       {
         "hidden": false,
+        "id": "text_history_source_visit",
+        "max": 120,
+        "min": 0,
+        "name": "source_visit_id",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "hidden": false,
+        "id": "text_history_browser",
+        "max": 30,
+        "min": 0,
+        "name": "browser",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "hidden": false,
+        "id": "number_history_tz_offset",
+        "max": 840,
+        "min": -840,
+        "name": "timezone_offset",
+        "onlyInt": true,
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "number"
+      },
+      {
+        "hidden": false,
         "id": "number_history_duration",
         "max": null,
         "min": null,
@@ -234,14 +272,15 @@
       "CREATE INDEX `idx_history_flagged` ON `history` (`flagged`, `visit_time` DESC)",
       "CREATE INDEX `idx_history_category` ON `history` (`category`, `visit_time` DESC)",
       "CREATE INDEX `idx_history_domain` ON `history` (`domain`, `visit_time` DESC)",
-      "CREATE INDEX `idx_history_domain_path` ON `history` (`domain`, `path`)"
+      "CREATE INDEX `idx_history_domain_path` ON `history` (`domain`, `path`)",
+      "CREATE UNIQUE INDEX `idx_history_source_visit` ON `history` (`user_id`, `source_visit_id`) WHERE `source_visit_id` != ''"
     ],
     "system": false
   },
   {
     "id": "pbc_history_daily",
-    "listRule": "@request.auth.email = user_email",
-    "viewRule": "@request.auth.email = user_email",
+    "listRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "viewRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -438,8 +477,8 @@
   },
   {
     "id": "pbc_history_hourly_profile",
-    "listRule": "@request.auth.email = user_email",
-    "viewRule": "@request.auth.email = user_email",
+    "listRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "viewRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -490,13 +529,38 @@
       },
       {
         "hidden": false,
+        "id": "date_hh_visit_date",
+        "max": "",
+        "min": "",
+        "name": "visit_date",
+        "presentable": false,
+        "required": true,
+        "system": false,
+        "type": "date"
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_hh_domain",
+        "max": 0,
+        "min": 0,
+        "name": "domain",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": true,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "hidden": false,
         "id": "number_hh_weekday",
         "max": 6,
         "min": 0,
         "name": "weekday",
         "onlyInt": true,
         "presentable": false,
-        "required": true,
+        "required": false,
         "system": false,
         "type": "number"
       },
@@ -508,7 +572,7 @@
         "name": "hour",
         "onlyInt": true,
         "presentable": false,
-        "required": true,
+        "required": false,
         "system": false,
         "type": "number"
       },
@@ -558,14 +622,15 @@
       }
     ],
     "indexes": [
-      "CREATE UNIQUE INDEX `idx_hh_unique` ON `history_hourly_profile` (`user_id`, `weekday`, `hour`)"
+      "CREATE UNIQUE INDEX `idx_hh_unique` ON `history_hourly_profile` (`visit_date`, `user_id`, `domain`, `hour`)",
+      "CREATE INDEX `idx_hh_user_date` ON `history_hourly_profile` (`user_id`, `visit_date` DESC)"
     ],
     "system": false
   },
   {
     "id": "pbc_history_user_totals",
-    "listRule": "@request.auth.email = user_email",
-    "viewRule": "@request.auth.email = user_email",
+    "listRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "viewRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -724,8 +789,8 @@
   },
   {
     "id": "pbc_history_search_daily",
-    "listRule": "@request.auth.email = user_email",
-    "viewRule": "@request.auth.email = user_email",
+    "listRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
+    "viewRule": "@request.auth.id != \"\" && (@request.auth.role = \"parent\" || @request.auth.email = user_email)",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -788,6 +853,20 @@
       {
         "autogeneratePattern": "",
         "hidden": false,
+        "id": "text_hsd_domain",
+        "max": 0,
+        "min": 0,
+        "name": "domain",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": true,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
         "id": "text_hsd_query",
         "max": 0,
         "min": 0,
@@ -844,7 +923,7 @@
       }
     ],
     "indexes": [
-      "CREATE UNIQUE INDEX `idx_hsd_unique` ON `history_search_daily` (`visit_date`, `user_id`, `search_query`)",
+      "CREATE UNIQUE INDEX `idx_hsd_unique` ON `history_search_daily` (`visit_date`, `user_id`, `domain`, `search_query`)",
       "CREATE INDEX `idx_hsd_user_date` ON `history_search_daily` (`user_id`, `visit_date` DESC)"
     ],
     "system": false

@@ -5,10 +5,8 @@
   "description": "Save browser history to PocketBase",
   "permissions": [
     "history",
-    "storage"
-  ],
-  "host_permissions": [
-    "https://az.hoshor.me:8001/*"
+    "storage",
+    "alarms"
   ],
   "background": {
     "service_worker": "background.js"
@@ -16,5 +14,10 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "History to PocketBase"
-  }
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ]
 }
